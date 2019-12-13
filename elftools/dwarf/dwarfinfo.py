@@ -7,6 +7,7 @@
 # This code is in the public domain
 #-------------------------------------------------------------------------------
 from collections import namedtuple
+from bisect import bisect_right
 
 from ..common.exceptions import DWARFError
 from ..common.utils import (struct_parse, dwarf_assert,
@@ -103,6 +104,10 @@ class DWARFInfo(object):
         # Cache for abbrev tables: a dict keyed by offset
         self._abbrevtable_cache = {}
 
+        # Cache of compile units and map of their offsets for bisect lookup
+        self._cu_cache = []
+        self._cu_offsets_map = []
+
     @property
     def has_debug_info(self):
         """ Return whether this contains debug information.
@@ -111,6 +116,60 @@ class DWARFInfo(object):
         encoded DWARF but not actually for debugging.
         """
         return bool(self.debug_info_sec)
+
+    def get_CU_containing(self, refaddr):
+        """ Find the CU that includes the given reference address in the
+            .debug_info section.
+
+            refaddr:
+                Either a refaddr of a DIE (possibly from a DW_FORM_refaddr
+                attribute) or the section offset of a CU (possibly from an
+                aranges table).
+
+           This function will parse and cache CUs until the search criteria
+           is met, starting from the closest known offset lessthan or equal
+           to the given address.
+        """
+        dwarf_assert(
+            self.has_debug_info,
+            'CU lookup but no debug info section')
+        dwarf_assert(
+            0 <= refaddr < self.debug_info_sec.size,
+            "refaddr %s beyond .debug_info size" % refaddr)
+
+        # The CU containing the DIE we desire will be to the right of the
+        # DIE insert point.  If we have a CU address, then it will be a
+        # match but the right insert minus one will still be the item.
+        # The first CU starts at offset 0, so start there if cache is empty.
+        i = bisect_right(self._cu_offsets_map, refaddr)
+        start = self._cu_offsets_map[i - 1] if i > 0 else 0
+
+        # parse CUs until we find one containing the desired address
+        for cu in self._parse_CUs_iter(start):
+            if cu.cu_offset <= refaddr < cu.cu_offset + cu.size:
+                return cu
+
+        raise ValueError("CU for reference address %s not found" % refaddr)
+
+    def get_CU_at(self, offset):
+        """ Given a CU header offset, return the parsed CU.
+
+            offset:
+                The offset may be from an accelerated access table such as
+                the public names, public types, address range table, or
+                prior use.
+
+            This function will directly parse the CU doing no validation of
+            the offset beyond checking the size of the .debug_info section.
+        """
+        dwarf_assert(
+            self.has_debug_info,
+            'CU lookup but no debug info section')
+        dwarf_assert(
+            0 <= offset < self.debug_info_sec.size,
+            "offset %s beyond .debug_info size" % offset)
+
+        return self._cached_CU_at_offset(offset)
 
     def iter_CUs(self):
         """ Yield all the compile units (CompileUnit objects) in the debug info
@@ -130,7 +189,7 @@ class DWARFInfo(object):
             offset will return the same object).
         """
         dwarf_assert(
-            offset < self.debug_abbrev_sec.size,
+            offset <= self.debug_abbrev_sec.size,
             "Offset '0x%x' to abbrev table out of section bounds" % offset)
         if offset not in self._abbrevtable_cache:
             self._abbrevtable_cache[offset] = AbbrevTable(
@@ -253,22 +312,40 @@ class DWARFInfo(object):
 
     #------ PRIVATE ------#
 
-    def _parse_CUs_iter(self):
+    def _parse_CUs_iter(self, offset=0):
         """ Parse CU entries from debug_info. Yield CUs in order of appearance.
+
+            See .iter_CUs(), .get_CU_containing(), and .get_CU_at().
         """
         if self.debug_info_sec is None:
             return
 
-        offset = 0
         while offset < self.debug_info_sec.size:
-            cu = self._parse_CU_at_offset(offset)
+            cu = self._cached_CU_at_offset(offset)
             # Compute the offset of the next CU in the section. The unit_length
             # field of the CU header contains its size not including the length
             # field itself.
             offset = (  offset +
                         cu['unit_length'] +
                         cu.structs.initial_length_field_size())
+
             yield cu
+
+    def _cached_CU_at_offset(self, offset):
+        """ Lookup cu in the cache.  If not present, first parse and insert it.
+
+            See get_CU_at().
+        """
+        # If the insert point is 0 the entry does not match (perhaps the cache
+        # is empty).  Otherwise on a miss parse and insert.
+        i = bisect_right(self._cu_offsets_map, offset)
+        if i < 1 or offset != self._cu_offsets_map[i - 1]:
+            cu = self._parse_CU_at_offset(offset)
+            self._cu_offsets_map.insert(i, offset)
+            self._cu_cache.insert(i, cu)
+        else:
+            i = i - 1
+        return self._cu_cache[i]
 
     def _parse_CU_at_offset(self, offset):
         """ Parse and return a CU at the given offset in the debug_info stream.
