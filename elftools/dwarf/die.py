@@ -98,6 +98,28 @@ class DIE(object):
         """
         return self.tag is None
 
+    def get_DIE_from_attribute(self, name):
+        """ Follow a die attribute in the reference class selected by
+            name to the referenced DIE.
+
+            These attributes will instantate other objects and so are only
+            referenced on demand.
+        """
+        attr = self.attributes[name]
+        if attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
+                         'DW_FORM_ref8', 'DW_FORM_ref'):
+            refaddr = self.cu.cu_offset + attr.raw_value
+            return self.cu.get_DIE_from_refaddr(refaddr)
+        elif attr.form in ('DW_FORM_refaddr'):
+            return self.cu.dwarfinfo.get_DIE_from_refaddr(attr.raw_value)
+        elif attr.form in ('DW_FORM_ref_sig8'):
+            # Implement search type units for matching signature
+            raise NotImplementedError('%s (type unit by signature)' % attr.form)
+        elif attr.form in ('DW_FORM_ref_sup4', 'DW_FORM_ref_sup8'):
+            raise NotImplementedError('%s to dwo' % attr.form)
+        else:
+            raise DWARFError('%s is not a reference class form attribute' % attr)
+
     def get_parent(self):
         """ The parent DIE of this DIE. None if the DIE has no parent (i.e. a
             top-level DIE).
