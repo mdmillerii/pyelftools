@@ -8,6 +8,7 @@
 #-------------------------------------------------------------------------------
 from bisect import bisect_left
 from .die import DIE
+from ..common.utils import dwarf_assert
 
 
 class CompileUnit(object):
@@ -98,6 +99,26 @@ class CompileUnit(object):
 
         return top
 
+    @property
+    def size(self):
+        return self['unit_length'] + self.structs.initial_length_field_size()
+
+    def get_DIE_from_refaddr(self, refaddr):
+        """ Obtain a DIE contained in this CU from a reference.
+
+            The reference must be normalized to the debug info section offset.
+        """
+        # All DIEs are after the cu header and within the unit
+        dwarf_assert(
+            self.cu_die_offset <= refaddr < self.cu_offset + self.size,
+            'refaddr %s not in DIE range of CU %s' % (refaddr, self.cu_offset))
+        # The top die must be in the cache if any DIE is in the cache
+        top = self.get_top_DIE()
+
+        die = self._get_cached_DIE(top, refaddr)
+
+        return die
+
     def iter_DIEs(self):
         """ Iterate over all the DIEs in the CU, in order of their appearance.
             Note that null DIEs will also be returned.
@@ -113,25 +134,12 @@ class CompileUnit(object):
         if not die.has_children:
             return
 
-        # `cur_offset` tracks the offset past our current DIE as we iterate
-        # over children, providing the pivot as we bisect `self._diemap`
-        # and ensuring that we insert our children (and child offsets)
-        # in the correct order within both `self._dielist` and `self._diemap`.
+        # `cur_offset` tracks the stream offset as we iterate over our
+        # children, tracking the offset of the DIE to parse
         cur_offset = die.offset + die.size
 
         while True:
-            i = bisect_left(self._diemap, cur_offset)
-            # Note that `self._diemap` cannot be empty because a `die`, the argument,
-            # is already parsed.
-            if i < len(self._diemap) and cur_offset == self._diemap[i]:
-                child = self._dielist[i]
-            else:
-                child = DIE(
-                        cu=self,
-                        stream=die.stream,
-                        offset=cur_offset)
-                self._dielist.insert(i, child)
-                self._diemap.insert(i, cur_offset)
+            child = self._get_cached_DIE(die, cur_offset)
 
             child.set_parent(die)
 
@@ -179,3 +187,31 @@ class CompileUnit(object):
                 for d in self._iter_DIE_subtree(c):
                     yield d
             yield die._terminator
+
+    def _get_cached_DIE(self, die, cur_offset):
+        """ Given a offset, look it up in the cache.  If not present
+            insert it into the cache and parse it.
+
+            Copy the stream from passed reference DIE
+        """
+
+        # `cur_offset` is the offset in the stream DIE as we want to parse
+        # providing the pivot as we bisect `self._diemap`
+        # and ensuring that we insert our children (and child offsets)
+        # in the correct order within both `self._dielist` and `self._diemap`.
+
+        i = bisect_left(self._diemap, cur_offset)
+        # Note that `self._diemap` cannot be empty because a `die`, the argument,
+        # is already parsed.
+        if i < len(self._diemap) and cur_offset == self._diemap[i]:
+            child = self._dielist[i]
+        else:
+            child = DIE(
+                    cu=self,
+                    stream=die.stream,
+                    offset=cur_offset)
+            self._dielist.insert(i, child)
+            self._diemap.insert(i, cur_offset)
+
+        return child
+
