@@ -93,6 +93,21 @@ class DIE(object):
 
         self._parse_DIE()
 
+    def get_attribute(self, name, default=None):
+        """ Get an attribute, considering attributes inherited from a
+            DW_AT_specification or DW_AT_abstract_origin reference
+        """
+        if name in self.attributes:
+            return self.attributes.get(name, default)
+
+        # DWARF5 6.1.1.1 , 7.32, 3.3.8.2
+        for ref in ('DW_AT_specification', 'DW_AT_abstract_origin'):
+            if ref in self.attributes:
+                link = self.get_DIE_from_attribute(ref)
+                return link.get_attribute(name, default)
+
+        return default
+
     def is_null(self):
         """ Is this a null entry?
         """
