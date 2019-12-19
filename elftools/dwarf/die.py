@@ -16,6 +16,33 @@ from .enums import DW_FORM_raw2name
 # for DW_LANG_
 from .constants import *
 
+from .dwarf_expr import GenericExprVisitor
+class ExtractAddress(GenericExprVisitor):
+    def __init__(self, structs):
+        self.address = None
+        super(ExtractAddress, self).__init__(structs)
+
+    def parse_locexpr(self, expr):
+        self.address = None
+        self.process_expr(expr)
+        return self.address
+
+    def _after_visit(self, opcode, name, args):
+        if name == 'DW_OP_addr':
+            self.address = args[0]
+        else:
+            raise NotImplementedError(("Need to handle opcode %s %x" % (name, opcode)))
+
+class BitOffset(object):
+            def __init__(self, byte_amount, bit_amount=0):
+                self.bytes = byte_amount
+                self.bits = bit_amount
+            def add_to(self, base):
+                if self.bits:
+                    return BitOffset(base.bytes, self.bits + base.bits)
+                return BitOffset(self.bytes + base.bytes)
+
+
 # AttributeValue - describes an attribute value in the DIE:
 #
 # name:
@@ -186,6 +213,20 @@ class DIE(object):
             return 1
         # Fill in more from table language
         raise NotImplementedError("Find Language %s in table 7.17" % lang.value)
+
+    def get_byte_or_bit(self, byte_name, bit_name):
+        """ Look for a byte property, or if not found, look for a bit property
+
+            Returns a BitOffset structure with the values.
+        """
+        ### Fixme : will need to consider FORM , can be an expression
+        size = self.get_attribute(byte_name)
+        if size:
+            return BitOffset(size.value)
+        size = self.get_attribute(bit_name)
+        if size:
+            return BitOffset(0, size.value)
+        return None
 
     def enumerate_generic_subrange_type(self):
         if self.tag == 'DW_TAG_generic_subrange_type':
