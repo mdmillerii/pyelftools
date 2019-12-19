@@ -10,7 +10,7 @@ from collections import namedtuple, OrderedDict
 import os
 
 from ..common.exceptions import DWARFError
-from ..common.py3compat import bytes2str, iteritems
+from ..common.py3compat import bytes2str, iteritems, str2bytes
 from ..common.utils import struct_parse, preserve_stream_pos, dwarf_assert
 from .enums import DW_FORM_raw2name
 # for DW_LANG_
@@ -65,7 +65,6 @@ class BitOffset(object):
 #
 AttributeValue = namedtuple(
     'AttributeValue', 'name form value raw_value offset')
-
 
 class DIE(object):
     """ A DWARF debugging information entry. On creation, parses itself from
@@ -173,6 +172,122 @@ class DIE(object):
                 return
             yield die
 
+    def new_expand_type(self, var_name, offset):
+        for t in self.new_iter_type():
+            if t.tag in ('DW_TAG_array_type'):
+                for l in t.new_expand_array(var_name, offset):
+                    yield l
+                return
+            elif t.tag in ('DW_TAG_structure_type', 'DW_TAG_union_type'):
+                # DW_TAG_class, DW_TAG_instance ?
+                for l in t.new_expand_struct(var_name, offset):
+                    yield l
+                return
+            elif t.tag in ('DW_TAG_class_type', 'DW_TAG_instance_type'):
+                for l in t.new_expand_struct(var_name, offset):
+                    yield l
+                return
+            elif t.get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size'):
+                yield(var_name, [ self, t ], offset)
+                return
+
+    def new_expand_struct(self, var_name, offset):
+        for child in self.iter_children():
+            if child.tag == 'DW_TAG_member':
+                # fixme: can be an expression not a constant, pass
+                # offset on stack for expresson eval, get addr or reg
+                m_offset = child.get_byte_or_bit('DW_AT_data_member_location',
+                        'DW_AT_data_bit_offset')
+                if m_offset:
+                    off = m_offset.add_to(offset)
+                else:
+                    off = offset
+                mn = child.get_attribute('DW_AT_name')
+                if mn:
+                    vn = b'.'.join((var_name, mn.value))
+                else:
+                    vn = var_name
+                # else anon struct / union member
+                for l in child.new_expand_type(vn, off):
+                    yield l
+            elif True:
+                # These are only expected for classes and inheritance
+                pass
+            elif child.tag in ('DW_TAG_access_declaration',
+                    'DW_TAG_friend', 'DW_TAG_variable', 'DW_AT_subprogram',
+                    'DW_TAG_variant_part'):
+                pass
+            else:
+                # What is this
+                pass
+
+    def new_expand_array(self, var_name, offset):
+        """ Expand an array by iterating the subrange children with
+            increasing offsets
+        """
+
+        order = self.get_attribute('DW_AT_ordering')
+        dim = []
+        gs = None
+
+        for child in self.iter_children():
+            if child.tag in ('DW_TAG_subrange_type', 'DW_TAG_enumeration_type'):
+                dim.append(child)
+            elif child.tag in ('DW_TAG_generic_subrange_type'):
+                dim.insert(0, child)
+
+        dwarf_assert(
+            len(dim) >= 1,
+            'Missing array dimension of DIE %s' % self.offset)
+        dwarf_assert(
+            dim[0].tag != 'DW_AT_generic_subrange' or len(dim) == 1,
+                'DW_AT_generic_subrange must be only subrange of DIE %s' %
+                self.offset)
+
+        if order and order.value == DW_ORD_row_major:
+            dim = reverse(dim)
+
+        stride = self.get_byte_or_bit('DW_AT_byte_stride', 'DW_AT_bit_stride')
+
+        for t in self.new_iter_type():
+            if stride:
+                break
+            stride = t.get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size')
+
+        dwarf_assert(
+            stride,
+                'Unknown array element size for %s' % self.offset)
+
+        # recurise to loop over each iter
+        for l in self.new_expand_array_ranges(var_name, '', offset, stride,
+                order, dim):
+            yield l
+
+    def new_expand_array_ranges(self, var_name, icol, offset, stride, order, dim):
+        """ Helper for new_expand_array() to recursivly walk one subrange.
+        """
+        for (d, o, i) in dim[0].enumerate_array_rank(offset, stride):
+            cols = ''.join(('[%s]' % d, icol))
+            vn = b''.join((var_name, str2bytes(cols)))
+            if len(dim) == 1:
+                for l in self.new_expand_type(vn, o):
+                    yield l
+                    o = i.add_to(o)
+                continue
+
+            # reset either vn+rows or columns depeinding on insertion point
+            if order.value == DW_ORD_col_major:
+                vn = var_name
+            elif order.value == DW_ORD_row_major:
+                cols = icol
+            else:
+                raise ValueError('order.value %s: unknown order' % order.value)
+            # iterate on the next range
+            for l in self.new_expand_arrray_ranges(vn, cols, o, stride,
+                    order, dim[1:]):
+                yield l
+                o = i.add_to(o)
+
     def get_name(self, default=None):
         attr = self.get_attribute('DW_AT_name')
         if attr:
@@ -192,6 +307,38 @@ class DIE(object):
             if mn:
                 return tn + bytes2str(mn)
         return tn
+
+    def new_print_elems(self, offset=None, debug=0):
+        """ Original wrapper to print elemens and types
+        """
+        vn = self.get_name(b'<base>')
+        if self.tag in ('DW_TAG_variable'):
+            loc = self.get_attribute('DW_AT_location')
+            if loc:
+                if loc.form in ('DW_FORM_exprloc'):
+                    ed = ExtractAddress(self.cu.structs)
+                    # TODO: eval location with (likely) OP_address
+                    # offset = BitOffset.eval(expr)
+                    offset = BitOffset(ed.parse_locexpr(loc.value))
+                else:
+                    raise NotImplementedError('DIE %s location form %s' % (
+                        self.offset, loc.form))
+            else:
+                raise KeyError('DIE %s location key %s' % (
+                        self.offset, 'DW_AT_location'))
+
+        if offset is None:
+            offset = BitOffset(0)
+
+        for (n, mod, o) in self.new_expand_type(vn, offset):
+            off = '(%#x,%s)' % (o.bytes, o.bits)
+            tn = mod[0].get_type_name()
+            sz = mod[-1].get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size')
+            if sz:
+                size = '(%#x,%s)' % (sz.bytes, sz.bits)
+            else:
+                size = '(unknown)'
+            print ('%s is %s occuping %s at %s' % (n, tn, size, off))
 
     # DWARFv5 Table 7.17
     def get_default_lower_bound(self):
@@ -227,6 +374,19 @@ class DIE(object):
         if size:
             return BitOffset(0, size.value)
         return None
+
+    def enumerate_array_rank(self, offset, increment):
+        """ Iterate over the given array rank (dimension)
+        """
+        stride = self.get_byte_or_bit('DW_AT_stride', 'DW_AT_bit_stride')
+        if stride:
+            increment = stride
+
+        # Key error if the enumerator is not found
+        enumerator = self.enumeration_iters[self.tag]
+        for i in enumerator(self):
+            yield (i, offset, increment)
+            offset = increment.add_to(offset)
 
     def enumerate_generic_subrange_type(self):
         if self.tag == 'DW_TAG_generic_subrange_type':
