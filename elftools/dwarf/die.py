@@ -120,8 +120,10 @@ class DIE(object):
             These attributes will instantate other objects and so are only
             referenced on demand.
         """
-        attr = self.attributes[name]
-        if attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
+        attr = self.get_attribute(name)
+        if attr is None:
+            return None
+        elif attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
                          'DW_FORM_ref8', 'DW_FORM_ref'):
             refaddr = self.cu.cu_offset + attr.raw_value
             return self.cu.get_DIE_from_refaddr(refaddr)
