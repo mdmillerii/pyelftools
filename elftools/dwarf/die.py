@@ -11,9 +11,10 @@ import os
 
 from ..common.exceptions import DWARFError
 from ..common.py3compat import bytes2str, iteritems
-from ..common.utils import struct_parse, preserve_stream_pos
+from ..common.utils import struct_parse, preserve_stream_pos, dwarf_assert
 from .enums import DW_FORM_raw2name
-
+# for DW_LANG_
+from .constants import *
 
 # AttributeValue - describes an attribute value in the DIE:
 #
@@ -136,6 +137,103 @@ class DIE(object):
             raise NotImplementedError('%s to dwo' % attr.form)
         else:
             raise DWARFError('%s is not a reference class form attribute' % attr)
+
+    def new_iter_type(self):
+        die = self
+        while True:
+            die = die.get_DIE_from_attribute('DW_AT_type')
+            if die is None:
+                return
+            yield die
+
+    def get_name(self, default=None):
+        attr = self.get_attribute('DW_AT_name')
+        if attr:
+            vn = attr.value
+        else:
+            vn = default
+        return vn
+
+    def get_type_name(self, base=''):
+        """ Print the name of a type, using tags for the modifiers
+        """
+        tn = base
+        mn = None
+        for t in self.new_iter_type():
+            tn = tn + t.tag + ' '
+            mn = t.get_name()
+            if mn:
+                return tn + bytes2str(mn)
+        return tn
+
+    # DWARFv5 Table 7.17
+    def get_default_lower_bound(self):
+        """ Get the implicit lower bound consindering the language of the
+            compile unit.
+            See DWARFv5 table 7.17.
+        """
+        # consider putting in cu class
+        lang = self.cu.get_top_DIE().get_attribute('DW_AT_language')
+        dwarf_assert(
+            lang,
+            'No language specified and no lower bound for DIE %s' %
+            self.offset)
+        if lang.value in (DW_LANG_C89, DW_LANG_C,
+                DW_LANG_C_plus_plus, DW_LANG_C99, DW_LANG_Java):
+            return 0
+        elif lang.value in (DW_LANG_Fortran77, DW_LANG_Fortran90,
+                DW_LANG_Fortran95, DW_LANG_Fortran03, DW_LANG_Fortran03):
+            return 1
+        # Fill in more from table language
+        raise NotImplementedError("Find Language %s in table 7.17" % lang.value)
+
+    def enumerate_generic_subrange_type(self):
+        if self.tag == 'DW_TAG_generic_subrange_type':
+            raise NotImplementedError('DIE %s: No generic_subrange_type support yet' % self.offset)
+        raise ValueError('DIE %s: not DW_TAG_generic_subrange' % self.offset)
+
+    def enumerate_subrange(self):
+        if self.tag == 'DW_TAG_subrange_type':
+            lb = self.get_attribute('DW_AT_lower_bound')
+            if lb:
+                lb = lb.value
+            else:
+                lb = self.get_default_lower_bound()
+            count = self.get_attribute('DW_AT_count')
+            if count:
+                for i in range(count.value):
+                    yield (lb + i)
+                return
+            ub = self.get_attribute('DW_AT_upper_bound')
+            if ub:
+                for i in range(lb, ub.value + 1):
+                    yield (i)
+                return
+            # could become a default generator by parameter?
+            return StopIteration('Unnown bounds')
+        raise ValueError('DIE %s: not DW_TAG_subrange_type' % self.offset)
+
+    def enumerate_enumerated_type(self):
+        if self.tag == 'DW_TAG_enumerated_type':
+            # DW_AT_enum_class possible
+            for child in self.iter_children:
+                if child.tag == 'DW_TAG_enumerator':
+                    cvalue = child.get.attribute('DW_AT_const_value')
+                    dwarf_assert(
+                        cvalue,
+                        'Enumerator %s missing values' % self.offset)
+                    yield (cvalue.value)
+                else:
+                    # What other children would we expect?
+                    pass
+            return
+        raise ValueError('DIE %s: not DW_TAG_enumerated_type' % self.offset)
+
+    enumeration_iters = {
+        'DW_TAG_subrange_type': enumerate_subrange,
+        'DW_TAG_enumerated_type': enumerate_enumerated_type,
+        'DW_TAG_generic_subrange_type': enumerate_generic_subrange_type,
+        }
 
     def get_parent(self):
         """ The parent DIE of this DIE. None if the DIE has no parent (i.e. a
