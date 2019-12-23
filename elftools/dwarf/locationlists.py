@@ -121,3 +121,77 @@ class LocationParser(object):
                                'DW_AT_frame_base', 'DW_AT_segment',
                                'DW_AT_static_link', 'DW_AT_use_location',
                                'DW_AT_vtable_elem_location'))
+
+class LocationFinder(object):
+    """ Find a location expression given an attribute name and a DIE
+    """
+    def __init__(self, die, attr_name):
+        """ Instantiate a LocationFinder to find the valid DWARF expressions
+            defining the attribute for a given address.
+        """
+        self.attr = die.get_attribute(attr_name)
+        if self.attr is None:
+            raise KeyError('DIE %s has no attribute %s' %
+                    (die.offset, attr_name))
+
+        if self.is_exprloc:
+            return
+
+        version = die.cu['version']
+        parser = LocationParser(die.cu.dwarfinfo.location_lists())
+
+        # Parse the location list (or find it is an old expression form)
+        if not parser.attribute_has_location(self.attr, version):
+            raise TypeError
+
+        self.loclist = parser.parse_from_attribute(self.attr, version)
+
+        # Check if an early version block
+        if self.is_expr:
+            return
+
+        # Otherwise check if the compile unit DIE defines a base address
+        self.low_pc = die.cu.get_top_DIE().get_attribute('DW_AT_low_pc')
+
+    @property
+    def is_exprloc(self):
+        """ Is the attribute of form DW_AT_exprloc ?
+        """
+        return self.attr.form == 'DW_FORM_exprloc'
+
+    @property
+    def is_expr(self):
+        """ The attribute value contains the sole expression
+
+            The location is valid if the DIE heirarchy is in scope.
+        """
+        return self.is_exprloc or isinstance(self.loclist, LocationExpr)
+
+    def iter_expr(self, address):
+        """ Iterate over the attributes location list provding each
+            expression that is valid for the given address.
+        """
+
+        if self.is_expr:
+            yield self.attr.value
+            return
+
+        base = None
+
+        if self.low_pc:
+            base = self.low_pc.value
+
+        for e in self.loclist:
+            if isinstance(e, BaseAddressEntry):
+                base = e.base_address
+                continue
+
+            dwarf_assert(
+                isinstance(e, LocationEntry),
+                'Unexpected location list entry %s' % e)
+
+            if base is None:
+                raise ValueError('Invalid location list: no base availible')
+
+            if base + begin_offset <= address < base + end_offset:
+                yield e.loc_expr
