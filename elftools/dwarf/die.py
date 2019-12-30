@@ -99,9 +99,11 @@ class DIE(object):
         return self.tag is None
 
     def get_parent(self):
-        """ The parent DIE of this DIE. None if the DIE has no parent (i.e. a
-            top-level DIE).
+        """ Return the parent DIE of this DIE, or None if the DIE has no
+            parent (i.e. is a top-level DIE).
         """
+        if self._parent is None:
+            self._search_for_ancestors()
         return self._parent
 
     def get_full_path(self):
@@ -126,8 +128,9 @@ class DIE(object):
     def iter_siblings(self):
         """ Yield all siblings of this DIE
         """
-        if self._parent:
-            for sibling in self._parent.iter_children():
+        parent = self.get_parent()
+        if parent:
+            for sibling in parent.iter_children():
                 if sibling is not self:
                     yield sibling
         else:
@@ -141,6 +144,40 @@ class DIE(object):
         self._parent = die
 
     #------ PRIVATE ------#
+
+    def _search_for_ancestors(self):
+        """ Search for our parent by, starting with the CU top die,
+            setting the _parent link of each child and then iterating on
+            the child which was closest to object DIE offset without over,
+            whithan to the object DIE offset, which is an ancestor.
+        """
+        search = self.cu.get_top_DIE()
+
+        while search.offset < self.offset:
+
+            prev = search
+            for child in search.iter_children():
+                child.set_parent(search)
+                if child.offset <= self.offset:
+                    prev = child
+
+            # We need to check if the offset is the terminator
+            if search.has_children and search._terminator.offset <= self.offset:
+                    prev = search._terminator
+
+            # If we didn't find a closer parent, give up, don't loop.
+            # Either we mis-parsed an ancestor or someone asked for a DIE
+            # by an offset that was not actually the start of a DIE.
+            if prev is search:
+                raise ValueError("offset %s not in CU %s DIE tree" %
+                    (self.offset, self.cu.cu_offset))
+
+            search = prev
+
+        pass
+        # if search.offset != self.offset
+        #    raise ValueError("offset %s not in DIE %s tree" % (offset,
+        #       search.offset)
 
     def __repr__(self):
         s = 'DIE %s, size=%s, has_children=%s\n' % (
