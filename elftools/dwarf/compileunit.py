@@ -6,7 +6,7 @@
 # Eli Bendersky (eliben@gmail.com)
 # This code is in the public domain
 #-------------------------------------------------------------------------------
-from bisect import bisect_left
+from bisect import bisect_right
 from .die import DIE
 from ..common.utils import dwarf_assert
 
@@ -112,10 +112,8 @@ class CompileUnit(object):
         dwarf_assert(
             self.cu_die_offset <= refaddr < self.cu_offset + self.size,
             'refaddr %s not in DIE range of CU %s' % (refaddr, self.cu_offset))
-        # The top die must be in the cache if any DIE is in the cache
-        top = self.get_top_DIE()
 
-        die = self._get_cached_DIE(top, refaddr)
+        die = self._get_cached_DIE(refaddr)
 
         return die
 
@@ -135,11 +133,11 @@ class CompileUnit(object):
             return
 
         # `cur_offset` tracks the stream offset as we iterate over our
-        # children, tracking the offset of the DIE to parse
+        # children, tracking the offset of the DIE to visit
         cur_offset = die.offset + die.size
 
         while True:
-            child = self._get_cached_DIE(die, cur_offset)
+            child = self._get_cached_DIE(cur_offset)
 
             child.set_parent(die)
 
@@ -188,30 +186,39 @@ class CompileUnit(object):
                     yield d
             yield die._terminator
 
-    def _get_cached_DIE(self, die, cur_offset):
-        """ Given a offset, look it up in the cache.  If not present
-            insert it into the cache and parse it.
+    def _get_cached_DIE(self, offset):
+        """ Given a DIE offset, look it up in the cache.  If not present,
+            parse the DIE and insert it into the cache.
 
-            Copy the stream from passed reference DIE
+            offset:
+                The offset of the DIE in the stream to lookup or parse.
+
+            The stream reference is copied from the top DIE, which will
+            also be parsed and cached if needed.
         """
+        # The top die must be in the cache if any DIE is in the cache.
+        # The stream is the same for all DIEs in this CU, so populate
+        # the top DIE and obtain a reference to its stream.
+        top_die_stream = self.get_top_DIE().stream
 
-        # `cur_offset` is the offset in the stream DIE as we want to parse
-        # providing the pivot as we bisect `self._diemap`
-        # and ensuring that we insert our children (and child offsets)
-        # in the correct order within both `self._dielist` and `self._diemap`.
+        # `offset` is the offset in the stream DIE as we want to parse.
+        # The map is maintined as a parallel array to the list.  We call
+        # bisect each time to ensure new DIEs are inserted in the correct
+        # order within both `self._dielist` and `self._diemap`.
+        i = bisect_right(self._diemap, offset)
 
-        i = bisect_left(self._diemap, cur_offset)
-        # Note that `self._diemap` cannot be empty because a `die`, the argument,
-        # is already parsed.
-        if i < len(self._diemap) and cur_offset == self._diemap[i]:
-            child = self._dielist[i]
+        # Note that `self._diemap` cannot be empty because a the top DIE
+        # was inserted by the call to get_top_DIE.  Also it has the minimal
+        # offset, so a bisect_right lookup will always be at least 1.
+        if offset == self._diemap[i - 1]:
+            die = self._dielist[i - 1]
         else:
-            child = DIE(
+            die = DIE(
                     cu=self,
-                    stream=die.stream,
-                    offset=cur_offset)
-            self._dielist.insert(i, child)
-            self._diemap.insert(i, cur_offset)
+                    stream=top_die_stream,
+                    offset=offset)
+            self._dielist.insert(i, die)
+            self._diemap.insert(i, offset)
 
-        return child
+        return die
 
