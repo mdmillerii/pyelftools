@@ -189,9 +189,12 @@ class DIE(object):
                 for l in t.new_expand_struct(var_name, offset):
                     yield l
                 return
+            elif t.tag in ('DW_TAG_pointer'):
+                return
             elif t.get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size'):
                 # yield(var_name, [ self, t ], offset)
-                return
+                # return
+                pass
 
     def new_expand_struct(self, var_name, offset):
         for child in self.iter_children():
