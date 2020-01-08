@@ -265,13 +265,14 @@ class DIE(object):
                 order, dim):
             yield l
 
-    def new_expand_array_ranges(self, var_name, icol, offset, stride, order, dim):
+    def new_expand_array_ranges(self, var_name, icol, offset, stride, order, dims):
         """ Helper for new_expand_array() to recursivly walk one subrange.
         """
-        for (d, o, i) in dim[0].enumerate_array_rank(offset, stride):
+        dim = dims.pop(0)
+        for (d, o, i) in dim.enumerate_array_rank(offset, stride):
             cols = ''.join(('[%s]' % d, icol))
             vn = b''.join((var_name, str2bytes(cols)))
-            if len(dim) == 1:
+            if not dims:
                 for l in self.new_expand_type(vn, o):
                     yield l
                     o = i.add_to(o)
@@ -279,14 +280,16 @@ class DIE(object):
 
             # reset either vn+rows or columns depeinding on insertion point
             if order.value == DW_ORD_col_major:
+                # the cols fields will prepend, reset var_name
                 vn = var_name
             elif order.value == DW_ORD_row_major:
+                # the var name fields will append, reset cols
                 cols = icol
             else:
                 raise ValueError('order.value %s: unknown order' % order.value)
             # iterate on the next range
             for l in self.new_expand_arrray_ranges(vn, cols, o, stride,
-                    order, dim[1:]):
+                    order, dims):
                 yield l
                 o = i.add_to(o)
 
