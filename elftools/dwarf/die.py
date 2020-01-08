@@ -174,6 +174,8 @@ class DIE(object):
 
     def new_expand_type(self, var_name, offset):
         for t in self.new_iter_type():
+            if t.get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size'):
+                yield(var_name, [ self, t ], offset)
             if t.tag in ('DW_TAG_array_type'):
                 for l in t.new_expand_array(var_name, offset):
                     yield l
@@ -188,7 +190,7 @@ class DIE(object):
                     yield l
                 return
             elif t.get_byte_or_bit('DW_AT_byte_size', 'DW_AT_bit_size'):
-                yield(var_name, [ self, t ], offset)
+                # yield(var_name, [ self, t ], offset)
                 return
 
     def new_expand_struct(self, var_name, offset):
