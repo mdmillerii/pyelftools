@@ -117,6 +117,30 @@ class DWARFInfo(object):
         """
         return bool(self.debug_info_sec)
 
+    def get_DIE_from_lute(self, lutentry):
+        """ Get the DIE from the pubnames or putbtypes lookup table entry.
+
+            lutentry:
+                A NameLUTEntry object from a NameLUT instance (see
+                .get_pubmames and .get_pubtypes methods).
+        """
+        cu = self.get_CU_at(lutentry.cu_ofs)
+        return self.get_DIE_from_refaddr(lutentry.die_ofs, cu)
+
+    def get_DIE_from_refaddr(self, refaddr, cu=None):
+        """ Given a .debug_info section offset of a DIE, return the DIE.
+
+            refaddr:
+                The refaddr may come from a DW_FORM_ref_addr attribute.
+
+            cu:
+                The compile unit object, if known.  If None a search
+                from the closest offset less than refaddr will be performed.
+        """
+        if cu is None:
+            cu = self.get_CU_containing(refaddr)
+        return cu.get_DIE_from_refaddr(refaddr)
+
     def get_CU_containing(self, refaddr):
         """ Find the CU that includes the given reference address in the
             .debug_info section.
