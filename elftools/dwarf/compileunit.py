@@ -119,9 +119,7 @@ class CompileUnit(object):
             self.cu_die_offset <= refaddr < self.cu_offset + self.size,
             'refaddr %s not in DIE range of CU %s' % (refaddr, self.cu_offset))
 
-        die = self._get_cached_DIE(refaddr)
-
-        return die
+        return self._get_cached_DIE(refaddr)
 
     def iter_DIEs(self):
         """ Iterate over all the DIEs in the CU, in order of their appearance.
@@ -138,8 +136,8 @@ class CompileUnit(object):
         if not die.has_children:
             return
 
-        # `cur_offset` tracks the stream offset as we iterate over our
-        # children, tracking the offset of the DIE to visit
+        # `cur_offset` tracks the stream offset of the next DIE to yield
+        # as we iterate over our children,
         cur_offset = die.offset + die.size
 
         while True:
@@ -197,9 +195,9 @@ class CompileUnit(object):
             parse the DIE and insert it into the cache.
 
             offset:
-                The offset of the DIE in the stream to lookup or parse.
+                The offset of the DIE in the debug_info section to retrieve.
 
-            The stream reference is copied from the top DIE, which will
+            The stream reference is copied from the top DIE.  The top die will
             also be parsed and cached if needed.
 
             See also get_DIE_from_refaddr(self, refaddr).
@@ -209,24 +207,20 @@ class CompileUnit(object):
         # the top DIE and obtain a reference to its stream.
         top_die_stream = self.get_top_DIE().stream
 
-        # `offset` is the offset in the stream DIE as we want to parse.
+        # `offset` is the offset in the stream of the DIE we want to return.
         # The map is maintined as a parallel array to the list.  We call
         # bisect each time to ensure new DIEs are inserted in the correct
         # order within both `self._dielist` and `self._diemap`.
         i = bisect_right(self._diemap, offset)
 
         # Note that `self._diemap` cannot be empty because a the top DIE
-        # was inserted by the call to get_top_DIE.  Also it has the minimal
-        # offset, so a bisect_right lookup will always be at least 1.
+        # was inserted by the call to .get_top_DIE().  Also it has the minimal
+        # offset, so the bisect_right insert point will always be at least 1.
         if offset == self._diemap[i - 1]:
             die = self._dielist[i - 1]
         else:
-            die = DIE(
-                    cu=self,
-                    stream=top_die_stream,
-                    offset=offset)
+            die = DIE(cu=self, stream=top_die_stream, offset=offset)
             self._dielist.insert(i, die)
             self._diemap.insert(i, offset)
 
         return die
-

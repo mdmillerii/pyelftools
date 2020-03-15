@@ -104,7 +104,8 @@ class DWARFInfo(object):
         # Cache for abbrev tables: a dict keyed by offset
         self._abbrevtable_cache = {}
 
-        # Cache of compile units and map of their offsets for bisect lookup
+        # Cache of compile units and map of their offsets for bisect lookup.
+        # Access with .iter_CUs(), .get_CU_containing(), and/or .get_CU_at().
         self._cu_cache = []
         self._cu_offsets_map = []
 
@@ -117,15 +118,15 @@ class DWARFInfo(object):
         """
         return bool(self.debug_info_sec)
 
-    def get_DIE_from_lute(self, lutentry):
+    def get_DIE_from_lut_entry(self, lut_entry):
         """ Get the DIE from the pubnames or putbtypes lookup table entry.
 
-            lutentry:
+            lut_entry:
                 A NameLUTEntry object from a NameLUT instance (see
                 .get_pubmames and .get_pubtypes methods).
         """
-        cu = self.get_CU_at(lutentry.cu_ofs)
-        return self.get_DIE_from_refaddr(lutentry.die_ofs, cu)
+        cu = self.get_CU_at(lut_entry.cu_ofs)
+        return self.get_DIE_from_refaddr(lut_entry.die_ofs, cu)
 
     def get_DIE_from_refaddr(self, refaddr, cu=None):
         """ Given a .debug_info section offset of a DIE, return the DIE.
@@ -213,7 +214,7 @@ class DWARFInfo(object):
             offset will return the same object).
         """
         dwarf_assert(
-            offset <= self.debug_abbrev_sec.size,
+            offset < self.debug_abbrev_sec.size,
             "Offset '0x%x' to abbrev table out of section bounds" % offset)
         if offset not in self._abbrevtable_cache:
             self._abbrevtable_cache[offset] = AbbrevTable(
@@ -337,7 +338,11 @@ class DWARFInfo(object):
     #------ PRIVATE ------#
 
     def _parse_CUs_iter(self, offset=0):
-        """ Parse CU entries from debug_info. Yield CUs in order of appearance.
+        """ Iterate CU objects in order of appearance in the debug_info section.
+
+            offset:
+                The offset of the first CU to yield.  Additional iterations
+                will return the sequential unit objects.
 
             See .iter_CUs(), .get_CU_containing(), and .get_CU_at().
         """
@@ -352,24 +357,33 @@ class DWARFInfo(object):
             offset = (  offset +
                         cu['unit_length'] +
                         cu.structs.initial_length_field_size())
-
             yield cu
 
     def _cached_CU_at_offset(self, offset):
-        """ Lookup cu in the cache.  If not present, first parse and insert it.
+        """ Return the CU with unit header at the given offset into the
+            debug_info section from the cache.  If not present, the unit is
+            header is parsed and the object is installed in the cache.
+
+            offset:
+                The offset of the unit header in the .debug_info section
+                to of the unit to fetch from the cache.
 
             See get_CU_at().
         """
-        # If the insert point is 0 the entry does not match (perhaps the cache
-        # is empty).  Otherwise on a miss parse and insert.
+        # Find the insert point for the requested offset.  With bisect_right,
+        # if this entry is present in the cache it will be the prior entry.
         i = bisect_right(self._cu_offsets_map, offset)
-        if i < 1 or offset != self._cu_offsets_map[i - 1]:
-            cu = self._parse_CU_at_offset(offset)
-            self._cu_offsets_map.insert(i, offset)
-            self._cu_cache.insert(i, cu)
-        else:
-            i = i - 1
-        return self._cu_cache[i]
+        if i >= 1 and offset == self._cu_offsets_map[i - 1]:
+            return self._cu_cache[i - 1]
+
+        # Parse the CU and insert the offset and object into the cache.
+        # The ._cu_offsets_map[] contains just the numeric offsets for the
+        # bisect_right search while the parallel indexed ._cu_cache[] holds
+        # the object references.
+        cu = self._parse_CU_at_offset(offset)
+        self._cu_offsets_map.insert(i, offset)
+        self._cu_cache.insert(i, cu)
+        return cu
 
     def _parse_CU_at_offset(self, offset):
         """ Parse and return a CU at the given offset in the debug_info stream.

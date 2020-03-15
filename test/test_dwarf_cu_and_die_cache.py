@@ -29,10 +29,8 @@ class TestCacheLUTandDIEref(unittest.TestCase):
             dwarf = elffile.get_dwarf_info()
             pt = dwarf.get_pubnames()
             for (k, v) in pt.items():
-                ndie = dwarf.get_DIE_from_lute(v)
+                ndie = dwarf.get_DIE_from_lut_entry(v)
                 self.dprint(ndie)
-                # if not ndie.tag == 'DW_TAG_variable':
-                #     continue
                 if not 'DW_AT_type' in ndie.attributes:
                     continue
                 if not 'DW_AT_name' in ndie.attributes:

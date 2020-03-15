@@ -99,11 +99,11 @@ class DIE(object):
         return self.tag is None
 
     def get_DIE_from_attribute(self, name):
-        """ Follow a die attribute in the reference class selected by
-            name to the referenced DIE.
+        """ Return the DIE referenced by the named attribute of this DIE.
+            The attribute must be in the reference attribute class.
 
-            These attributes will instantate other objects and so are only
-            referenced on demand.
+            name:
+                The name of the attribute in the reference class.
         """
         attr = self.attributes[name]
         if attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
@@ -125,7 +125,7 @@ class DIE(object):
             parent (i.e. is a top-level DIE).
         """
         if self._parent is None:
-            self._search_for_ancestors()
+            self._search_ancestor_offspring()
         return self._parent
 
     def get_full_path(self):
@@ -167,39 +167,41 @@ class DIE(object):
 
     #------ PRIVATE ------#
 
-    def _search_for_ancestors(self):
-        """ Search for our parent by, starting with the CU top die,
-            setting the _parent link of each child and then iterating on
-            the child which was closest to object DIE offset without over,
-            whithan to the object DIE offset, which is an ancestor.
+    def _search_ancestor_offspring(self):
+        """ Search our ancestors identifying their offspring to find our parent.
+
+            DIEs are stored as a flattened tree.  The top DIE is the ancestor
+            of all DIEs in the unit.  Each parent is guaranteed to be at
+            an offset less than their children.  In each generation of children
+            the sibling with the closest offset not greater than our offset is
+            our ancestor.
         """
+        # This code is called when get_parent notices that the _parent has
+        # not been identified.  To avoid execution for each sibling record all
+        # the children of any parent iterated.  Assuming get_parent will also be
+        # called for siblings, it is more efficient if siblings references are
+        # provided and no worse than a single walk if they are missing, while
+        # stopping iteration early could result in O(n^2) walks.
         search = self.cu.get_top_DIE()
-
         while search.offset < self.offset:
-
             prev = search
             for child in search.iter_children():
                 child.set_parent(search)
                 if child.offset <= self.offset:
                     prev = child
 
-            # We need to check if the offset is the terminator
+            # We also need to check the offset of the terminator DIE
             if search.has_children and search._terminator.offset <= self.offset:
                     prev = search._terminator
 
             # If we didn't find a closer parent, give up, don't loop.
-            # Either we mis-parsed an ancestor or someone asked for a DIE
+            # Either we mis-parsed an ancestor or someone created a DIE
             # by an offset that was not actually the start of a DIE.
             if prev is search:
                 raise ValueError("offset %s not in CU %s DIE tree" %
                     (self.offset, self.cu.cu_offset))
 
             search = prev
-
-        pass
-        # if search.offset != self.offset
-        #    raise ValueError("offset %s not in DIE %s tree" % (offset,
-        #       search.offset)
 
     def __repr__(self):
         s = 'DIE %s, size=%s, has_children=%s\n' % (
